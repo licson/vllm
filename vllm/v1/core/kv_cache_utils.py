@@ -11,6 +11,8 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, NewType, TypeAlias, overload
 
+import re
+
 from vllm import envs
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
@@ -75,6 +77,8 @@ def maybe_convert_block_hash(hash_bytes: BlockHash) -> ExternalBlockHash:
 
 
 logger = init_logger(__name__)
+
+_LAYER_INDEX_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?:\.|$)")
 
 # The hash seed for the first block of any prefix block sequence.
 #
@@ -874,6 +878,35 @@ def get_uniform_page_size(kv_cache_specs: Iterable[KVCacheSpec]) -> int:
     return page_sizes.pop()
 
 
+def _get_dflash_isolated_group_ids(
+    vllm_config: VllmConfig,
+    kv_cache_groups: list[KVCacheGroupSpec],
+) -> set[int]:
+    spec_config = vllm_config.speculative_config
+    if spec_config is None or spec_config.method != "dflash":
+        return set()
+
+    try:
+        target_num_layers = vllm_config.model_config.get_num_layers(
+            vllm_config.parallel_config
+        )
+    except Exception:
+        return set()
+
+    group_ids: set[int] = set()
+    for group_id, group in enumerate(kv_cache_groups):
+        layer_indices: list[int] = []
+        for layer_name in group.layer_names:
+            match = _LAYER_INDEX_RE.search(layer_name)
+            if match is None:
+                layer_indices = []
+                break
+            layer_indices.append(int(match.group(1)))
+        if layer_indices and all(idx >= target_num_layers for idx in layer_indices):
+            group_ids.add(group_id)
+    return group_ids
+
+
 def _get_kv_cache_groups_uniform_spec(
     kv_cache_specs: dict[str, KVCacheSpec],
 ) -> list[KVCacheGroupSpec]:
@@ -1145,7 +1178,28 @@ def get_kv_cache_config_from_groups(
         # (sw.1, padding) will be: (group_size = 2)
         # full.0, sw.0, sw.1: share a Tensor with size=available_memory//2
         # full.1, sw.2: share another Tensor with size=available_memory//2
-        group_size = max(len(group.layer_names) for group in kv_cache_groups)
+        # DFlash writes draft context KVs directly into cache using the draft
+        # block table. Do not row-share those tensors with target KV groups, or
+        # overlapping physical block ids can overwrite target KVs under batching.
+        isolated_group_ids = _get_dflash_isolated_group_ids(
+            vllm_config, kv_cache_groups
+        )
+        shared_groups = [
+            group
+            for group_id, group in enumerate(kv_cache_groups)
+            if group_id not in isolated_group_ids
+        ]
+        isolated_layer_names = [
+            layer_name
+            for group_id in sorted(isolated_group_ids)
+            for layer_name in kv_cache_groups[group_id].layer_names
+        ]
+        shared_group_size = (
+            max(len(group.layer_names) for group in shared_groups)
+            if shared_groups
+            else 0
+        )
+        group_size = shared_group_size + len(isolated_layer_names)
 
         page_size = get_uniform_page_size(
             [group.kv_cache_spec for group in kv_cache_groups]
@@ -1159,13 +1213,17 @@ def get_kv_cache_config_from_groups(
             suppress_log=suppress_log,
         )
         kv_cache_tensors = []
-        for i in range(group_size):
+        for i in range(shared_group_size):
             shared_by = []
-            for j in range(len(kv_cache_groups)):
-                if i < len(kv_cache_groups[j].layer_names):
-                    shared_by.append(kv_cache_groups[j].layer_names[i])
+            for group in shared_groups:
+                if i < len(group.layer_names):
+                    shared_by.append(group.layer_names[i])
             kv_cache_tensors.append(
                 KVCacheTensor(size=page_size * num_blocks, shared_by=shared_by)
+            )
+        for layer_name in isolated_layer_names:
+            kv_cache_tensors.append(
+                KVCacheTensor(size=page_size * num_blocks, shared_by=[layer_name])
             )
 
     return KVCacheConfig(

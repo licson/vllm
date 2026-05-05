@@ -34,6 +34,7 @@ from vllm.model_executor.model_loader.weight_utils import (
 from vllm.multimodal.inputs import NestedTensors
 from vllm.transformers_utils.config import set_default_rope_theta
 from vllm.v1.attention.backend import AttentionType
+from vllm.v1.attention.selector import get_attn_backend
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheSpec,
@@ -162,6 +163,13 @@ class DFlashQwen3Attention(nn.Module):
             max_position=max_position,
             rope_parameters=rope_parameters,
         )
+        draft_attn_backend = get_attn_backend(
+            self.head_dim,
+            torch.get_default_dtype(),
+            cache_config.cache_dtype if cache_config is not None else "auto",
+            use_mm_prefix=False,
+            attn_type=attn_type,
+        )
         self.attn = DFlashAttention(
             self.num_heads,
             self.head_dim,
@@ -172,6 +180,7 @@ class DFlashQwen3Attention(nn.Module):
             per_layer_sliding_window=sliding_window,
             prefix=f"{prefix}.attn",
             attn_type=attn_type,
+            attn_backend=draft_attn_backend,
         )
         self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
         self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
@@ -302,6 +311,12 @@ class DFlashQwen3Model(nn.Module):
             self.config.hidden_size,
             prefix=maybe_prefix(prefix, "embed_tokens"),
         )
+        target_config = vllm_config.model_config.hf_text_config
+        self.embed_normalizer: float | None = None
+        if str(getattr(target_config, "model_type", "")).startswith("gemma4"):
+            # Gemma4 scales token embeddings by sqrt(hidden_size). DFlash
+            # shares the target embeddings, so the draft path must match.
+            self.embed_normalizer = target_config.hidden_size**0.5
 
         self.layer_types = _get_dflash_layer_types(self.config)
         self.layers = nn.ModuleList(
@@ -349,7 +364,8 @@ class DFlashQwen3Model(nn.Module):
         )
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.embed_tokens(input_ids)
+        embeds = self.embed_tokens(input_ids)
+        return embeds * self.embed_normalizer if self.embed_normalizer else embeds
 
     def _build_fused_kv_buffers(self) -> None:
         """Build fused weight buffers for precompute_and_store_context_kv.
@@ -590,6 +606,7 @@ class DFlashQwen3ForCausalLM(Qwen3ForCausalLM):
         self.logits_processor = LogitsProcessor(
             self.config.draft_vocab_size,
             scale=logit_scale,
+            soft_cap=getattr(self.config, "final_logit_softcapping", None),
         )
         target_vocab_size = vllm_config.model_config.get_vocab_size()
         if self.config.draft_vocab_size != target_vocab_size:
