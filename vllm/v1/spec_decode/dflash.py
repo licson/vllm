@@ -6,16 +6,13 @@ from typing import Any
 import torch
 from typing_extensions import override
 
-from vllm.config import VllmConfig, get_layers_from_vllm_config, replace
+from vllm.config import VllmConfig, replace
 from vllm.forward_context import set_forward_context
 from vllm.logger import init_logger
-from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.triton_utils import triton
 from vllm.v1.attention.backend import CommonAttentionMetadata
-from vllm.v1.kv_cache_interface import KVCacheConfig, UniformTypeKVCacheSpecs
 from vllm.v1.spec_decode.eagle import SpecDecodeBaseProposer
 from vllm.v1.spec_decode.utils import copy_and_expand_dflash_inputs_kernel
-from vllm.v1.worker.utils import AttentionGroup
 
 logger = init_logger(__name__)
 
@@ -86,54 +83,6 @@ class DFlashProposer(SpecDecodeBaseProposer):
         # Override to allow multimodal inputs since DFlash supports Qwen3.5 models
         # Support for multimodal inputs has not been tested.
         pass
-
-    @override
-    def initialize_attn_backend(
-        self,
-        kv_cache_config: KVCacheConfig,
-        kernel_block_sizes: list[int] | None = None,
-    ) -> None:
-        all_attn_layers = get_layers_from_vllm_config(
-            self.vllm_config,
-            AttentionLayerBase,  # type: ignore[type-abstract]
-        )
-
-        self.draft_attn_groups = []
-        for gid, group in enumerate(kv_cache_config.kv_cache_groups):
-            for layer_name in group.layer_names:
-                if layer_name not in self._draft_attn_layer_names:
-                    continue
-
-                layer_kv_cache_spec = group.kv_cache_spec
-                if isinstance(layer_kv_cache_spec, UniformTypeKVCacheSpecs):
-                    layer_kv_cache_spec = layer_kv_cache_spec.kv_cache_specs[layer_name]
-                self.draft_attn_groups.append(
-                    AttentionGroup(
-                        backend=all_attn_layers[layer_name].get_attn_backend(),
-                        layer_names=[layer_name],
-                        kv_cache_spec=layer_kv_cache_spec,
-                        kv_cache_group_id=gid,
-                    )
-                )
-
-        assert self.draft_attn_groups, "No DFlash draft attention groups found"
-        for attn_group in self.draft_attn_groups:
-            kernel_block_size = (
-                kernel_block_sizes[attn_group.kv_cache_group_id]
-                if kernel_block_sizes is not None
-                and attn_group.kv_cache_group_id < len(kernel_block_sizes)
-                else None
-            )
-            attn_group.create_metadata_builders(
-                self.vllm_config,
-                self.device,
-                kernel_block_size=kernel_block_size,
-            )
-
-        self.kv_cache_gid = self.draft_attn_groups[0].kv_cache_group_id
-        self.block_size = (
-            self.draft_attn_groups[0].get_metadata_builder().kv_cache_spec.block_size
-        )
 
     @override
     def set_inputs_first_pass(
@@ -322,27 +271,24 @@ class DFlashProposer(SpecDecodeBaseProposer):
     def build_per_group_and_layer_attn_metadata(
         self, cad: CommonAttentionMetadata, draft_index: int = 0
     ) -> tuple[list[object], dict[str, object]]:
-        per_group: list[object] = []
-        per_layer: dict[str, object] = {}
+        per_group, per_layer = super().build_per_group_and_layer_attn_metadata(
+            cad, draft_index
+        )
         sliding_layer_names: set[str] = getattr(
             self.model, "sliding_attention_layer_names", set()
         )
-        causal_cad = cad.replace(causal=True)
-
-        for attn_group in self.draft_attn_groups:
-            group_layer_names = set(attn_group.layer_names)
-            use_causal = bool(sliding_layer_names & group_layer_names)
-            assert not use_causal or group_layer_names <= sliding_layer_names, (
-                "DFlash SWA layers must not share an attention group with "
-                "non-SWA layers."
-            )
-            attn_metadata = attn_group.get_metadata_builder().build_for_drafting(
-                common_attn_metadata=causal_cad if use_causal else cad,
-                draft_index=draft_index,
-            )
-            per_group.append(attn_metadata)
-            for layer_name in attn_group.layer_names:
-                per_layer[layer_name] = attn_metadata
+        if sliding_layer_names:
+            causal_cad = cad.replace(causal=True)
+            for attn_group in self.draft_attn_groups:
+                causal_layers = sliding_layer_names & set(attn_group.layer_names)
+                if not causal_layers:
+                    continue
+                attn_metadata = attn_group.get_metadata_builder().build_for_drafting(
+                    common_attn_metadata=causal_cad,
+                    draft_index=draft_index,
+                )
+                for layer_name in causal_layers:
+                    per_layer[layer_name] = attn_metadata
 
         for layer_name, attn_metadata in per_layer.items():
             if layer_name in sliding_layer_names:
