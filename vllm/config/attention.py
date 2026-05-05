@@ -51,6 +51,9 @@ class AttentionConfig:
     use_prefill_query_quantization: bool = False
     """If set, quantize query for attention in prefill."""
 
+    use_non_causal: bool = False
+    """Whether to use non-causal (bidirectional) attention."""
+
     def compute_hash(self) -> str:
         """
         Provide a hash that uniquely identifies all the configs
