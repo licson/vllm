@@ -278,6 +278,10 @@ class DFlashProposer(SpecDecodeBaseProposer):
             self.model, "sliding_attention_layer_names", set()
         )
         if sliding_layer_names:
+            # DFlash layers consume attention metadata through the per-layer
+            # forward context. Keep the base non-causal group metadata for
+            # group-level spec decode checks, and specialize only the SWA
+            # layers that need a causal sliding-window mask.
             causal_cad = cad.replace(causal=True)
             for attn_group in self.draft_attn_groups:
                 causal_layers = sliding_layer_names & set(attn_group.layer_names)
