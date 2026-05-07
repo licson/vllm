@@ -11,6 +11,10 @@ from compressed_tensors.quantization import (
 
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm import _custom_ops as ops
+from vllm.distributed import (
+    get_tensor_model_parallel_rank,
+    get_tensor_model_parallel_world_size,
+)
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe import (
     FusedMoE,
@@ -343,6 +347,30 @@ class CompressedTensorsWNA16MarlinMoEMethod(CompressedTensorsMoEMethod):
                 layer, "w2_weight_scale", dict_weights_mxint4["gemm2_scales"]
             )
             return None
+
+        # FIX (vllm-project/vllm#41511): shard w2_weight_scale along K under TP.
+        # When load_full_w2=True the scale parameter is registered with the
+        # full group count and the weight loader skips narrowing. The Marlin
+        # kernel derives group_size = K_per_rank / num_groups, so an unsharded
+        # scale under TP causes a wrong (too small) group_size and crashes.
+        tp_size = get_tensor_model_parallel_world_size()
+        if tp_size > 1:
+            w2_scale = layer.w2_weight_scale
+            # Marlin layout: (num_experts, num_groups, hidden_size)
+            num_groups = w2_scale.shape[1]
+            if num_groups >= tp_size and num_groups % tp_size == 0:
+                groups_per_shard = num_groups // tp_size
+                tp_rank = get_tensor_model_parallel_rank()
+                start = groups_per_shard * tp_rank
+                end = start + groups_per_shard
+                w2_scale = w2_scale[:, start:end, :].contiguous()
+                replace_parameter(layer, "w2_weight_scale", w2_scale)
+            elif num_groups > 1:
+                logger.warning(
+                    "w2_weight_scale num_groups (%d) is not evenly divisible by "
+                    "tp_size (%d); leaving scale unsharded — kernel may fail",
+                    num_groups, tp_size,
+                )
 
         is_a_8bit = (
             self.marlin_input_dtype is not None

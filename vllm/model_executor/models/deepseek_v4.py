@@ -1004,7 +1004,14 @@ class DeepseekV4Attention(nn.Module):
             prefix=f"{prefix}.wo_b",
         )
         self.softmax_scale = self.head_dim**-0.5
-        self.scale_fmt = config.quantization_config["scale_fmt"]
+        # scale_fmt is only used in the indexer (for C4A layers), not in
+        # the main attention. Default to "ue8m0" for compatibility.
+        self.scale_fmt = (
+            config.quantization_config.get("scale_fmt", "ue8m0")
+            if hasattr(config, "quantization_config")
+            and isinstance(config.quantization_config, dict)
+            else "ue8m0"
+        )
 
         self.rope_parameters = config.rope_scaling
 
@@ -1531,6 +1538,15 @@ class DeepseekV4ForCausalLM(nn.Module):
     # Default mapper assumes the original FP4-expert checkpoint layout.
     # Overridden per-instance in __init__ when expert_dtype != "fp4".
     hf_to_vllm_mapper = _make_deepseek_v4_weights_mapper("fp4")
+
+    # Mapping from fused module names to their constituent shard names.
+    # Used by is_layer_skipped() and the compressed-tensors loader to
+    # determine the quantization scheme for fused layers.
+    packed_modules_mapping = {
+        "fused_wqa_wkv": ["wq_a", "wkv"],
+        "fused_wkv_wgate": ["wkv", "wgate"],
+        "gate_up_proj": ["w1", "w3"],
+    }
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
