@@ -210,6 +210,10 @@ class ModelConfig:
     """Arguments for online quantization.
     Auto-created when `quantization` equals to one of the string values of
     the `OnlineQuantScheme` enum."""
+    mxfp4_layers: str | None = None
+    """Comma-separated list of layer name patterns to apply dense MXFP4
+    quantization to (e.g. "gate_proj,up_proj,down_proj"). "all" applies
+    to all eligible linear layers. If unset, dense MXFP4 is disabled."""
     allow_deprecated_quantization: bool = False
     """Whether to allow deprecated quantization methods."""
     enforce_eager: bool = False

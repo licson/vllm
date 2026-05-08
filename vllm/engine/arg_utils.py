@@ -517,6 +517,7 @@ class EngineArgs:
     tokenizer_revision: str | None = ModelConfig.tokenizer_revision
     quantization: QuantizationMethods | str | None = ModelConfig.quantization
     quantization_config: "dict[str, Any] | OnlineQuantizationConfigArgs | None" = None
+    mxfp4_layers: str | None = ModelConfig.mxfp4_layers
     allow_deprecated_quantization: bool = ModelConfig.allow_deprecated_quantization
     enforce_eager: bool = ModelConfig.enforce_eager
     disable_custom_all_reduce: bool = ParallelConfig.disable_custom_all_reduce

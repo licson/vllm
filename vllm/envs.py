@@ -157,6 +157,7 @@ if TYPE_CHECKING:
     VLLM_HUMMING_USE_F16_ACCUM: bool = False
     VLLM_HUMMING_MOE_GEMM_TYPE: Literal["indexed", "grouped", "auto"] | None = None
     VLLM_MXFP4_USE_MARLIN: bool | None = None
+    VLLM_MXFP4_LAYERS: str | None = None
     VLLM_DEEPEPLL_NVFP4_DISPATCH: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
     VLLM_TPU_BUCKET_PADDING_GAP: int = 0
@@ -1212,6 +1213,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_MXFP4_USE_MARLIN": lambda: maybe_convert_bool(
         os.environ.get("VLLM_MXFP4_USE_MARLIN", None)
     ),
+    # Comma-separated list of layer name patterns to apply dense MXFP4
+    # quantization to (e.g. "gate_proj,up_proj,down_proj"). "all" applies
+    # to all eligible linear layers. If unset, dense MXFP4 is disabled.
+    "VLLM_MXFP4_LAYERS": lambda: os.environ.get("VLLM_MXFP4_LAYERS", None),
     # The activation dtype for marlin kernel
     "VLLM_MARLIN_INPUT_DTYPE": env_with_choices(
         "VLLM_MARLIN_INPUT_DTYPE", None, ["int8", "fp8"]
