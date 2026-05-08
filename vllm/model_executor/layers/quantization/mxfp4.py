@@ -3,6 +3,7 @@
 
 import torch
 
+import vllm.envs as envs
 from vllm.config import get_current_vllm_config
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention import Attention
@@ -27,13 +28,28 @@ from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import (
     select_deepseek_v4_mxfp4_moe_backend,
     select_mxfp4_moe_backend,
 )
-from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
+from vllm.model_executor.layers.linear import (
+    LinearBase,
+    LinearMethodBase,
+    UnquantizedLinearMethod,
+)
 from vllm.model_executor.layers.quantization import QuantizationMethods
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig,
     QuantizeMethodBase,
 )
+from vllm.model_executor.layers.quantization.utils.marlin_utils_fp4 import (
+    apply_fp4_marlin_linear,
+    prepare_fp4_layer_for_marlin,
+)
+from vllm.model_executor.layers.quantization.utils.mxfp4_utils import (
+    get_padding_alignment,
+    mxfp4_e2m1_quantize,
+)
 from vllm.model_executor.layers.quantization.utils.quant_utils import is_layer_skipped
+from vllm.model_executor.layers.vocab_parallel_embedding import (
+    VocabParallelEmbedding,
+)
 from vllm.model_executor.utils import replace_parameter, set_weight_attrs
 
 logger = init_logger(__name__)
@@ -82,11 +98,18 @@ class Mxfp4Config(QuantizationConfig):
                 fused_mapping=self.packed_modules_mapping,
             ):
                 return UnquantizedLinearMethod()
+            if self._should_use_mxfp4_linear(prefix):
+                return Mxfp4LinearMethod()
             logger.debug_once(
-                "MXFP4 linear layer is not implemented - falling back to "
-                "UnquantizedLinearMethod.",
+                "MXFP4 linear layer is not enabled for %s - falling back to "
+                "UnquantizedLinearMethod. Use --mxfp4-layers to enable.",
+                prefix,
             )
             return UnquantizedLinearMethod()
+        elif isinstance(layer, VocabParallelEmbedding):
+            if self._should_use_mxfp4_lm_head(prefix, layer):
+                return Mxfp4LMHeadMethod()
+            return None
         elif isinstance(layer, FusedMoE):
             return GptOssMxfp4MoEMethod(layer.moe_config)
         elif isinstance(layer, Attention):
@@ -94,6 +117,64 @@ class Mxfp4Config(QuantizationConfig):
                 "MXFP4 attention layer is not implemented. "
                 "Skipping quantization for this layer.",
             )
+        return None
+
+    def _should_use_mxfp4_linear(self, prefix: str) -> bool:
+        """Check if dense MXFP4 quantization should be used for a linear layer."""
+        # Globally disable when LoRA is configured
+        vllm_config = get_current_vllm_config()
+        if getattr(vllm_config, "lora_config", None) is not None:
+            return False
+
+        mxfp4_layers = self._get_mxfp4_layers()
+        if mxfp4_layers is None:
+            return False
+        if mxfp4_layers == "all":
+            return True
+        return any(pattern in prefix for pattern in mxfp4_layers.split(","))
+
+    def _should_use_mxfp4_lm_head(self, prefix: str,
+                                   layer: torch.nn.Module) -> bool:
+        """Check if dense MXFP4 quantization should be used for LM head."""
+        # Only apply to LM head, not token embeddings
+        if "lm_head" not in prefix:
+            return False
+
+        # Globally disable when LoRA is configured
+        vllm_config = get_current_vllm_config()
+        if getattr(vllm_config, "lora_config", None) is not None:
+            return False
+
+        # Skip tied embeddings unless explicitly requested
+        hf_config = getattr(vllm_config.model_config, "hf_config", None)
+        if getattr(hf_config, "tie_word_embeddings", False):
+            logger.warning_once(
+                "MXFP4 LM head quantization is disabled because "
+                "tie_word_embeddings=True."
+            )
+            return False
+
+        mxfp4_layers = self._get_mxfp4_layers()
+        if mxfp4_layers is None:
+            return False
+        if mxfp4_layers == "all":
+            return True
+        return any(pattern in prefix for pattern in mxfp4_layers.split(","))
+
+    def _get_mxfp4_layers(self) -> str | None:
+        """Return the effective mxfp4_layers setting.
+
+        Priority: CLI arg > env var > None
+        """
+        vllm_config = get_current_vllm_config()
+        model_config = getattr(vllm_config, "model_config", None)
+        if model_config is not None:
+            layers = getattr(model_config, "mxfp4_layers", None)
+            if layers is not None:
+                return layers.strip() if isinstance(layers, str) else None
+        env_val = envs.VLLM_MXFP4_LAYERS
+        if env_val is not None:
+            return env_val.strip()
         return None
 
     def is_mxfp4_quant(self, prefix: str, layer: torch.nn.Module) -> bool:
@@ -462,6 +543,178 @@ class GptOssMxfp4MoEMethod(FusedMoEMethodBase):
             global_num_experts=layer.global_num_experts,
             expert_map=layer.expert_map,
             apply_router_weight_on_input=layer.apply_router_weight_on_input,
+        )
+
+
+class Mxfp4LinearMethod(LinearMethodBase):
+    """Dense linear layer MXFP4 quantization using the Marlin kernel."""
+
+    def create_weights(
+        self,
+        layer: torch.nn.Module,
+        input_size_per_partition: int,
+        output_partition_sizes: list[int],
+        input_size: int,
+        output_size: int,
+        params_dtype: torch.dtype,
+        **extra_weight_attrs,
+    ):
+        output_size_per_partition = sum(output_partition_sizes)
+        layer.input_size_per_partition = input_size_per_partition
+        layer.output_size_per_partition = output_size_per_partition
+        layer.original_input_size_per_partition = input_size_per_partition
+        layer.params_dtype = params_dtype
+
+        weight_loader = extra_weight_attrs.pop("weight_loader", None)
+        weight = torch.nn.Parameter(
+            torch.empty(
+                output_size_per_partition,
+                input_size_per_partition,
+                dtype=params_dtype,
+            ),
+            requires_grad=False,
+        )
+        set_weight_attrs(weight, {"input_dim": 1, "output_dim": 0})
+        if weight_loader is not None:
+            set_weight_attrs(weight, {"weight_loader": weight_loader})
+        layer.register_parameter("weight", weight)
+        set_weight_attrs(weight, extra_weight_attrs)
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        weight = layer.weight.data
+        orig_k = layer.original_input_size_per_partition
+        padded_k = get_padding_alignment(orig_k, 32)
+
+        # Pad weight to multiple of 32 along K dimension
+        if padded_k > orig_k:
+            padded_weight = torch.zeros(
+                weight.shape[0],
+                padded_k,
+                dtype=weight.dtype,
+                device=weight.device,
+            )
+            padded_weight[:, :orig_k] = weight
+            weight = padded_weight
+
+        # Quantize to MXFP4
+        qweight, qscale = mxfp4_e2m1_quantize(weight)
+
+        # Replace weight with quantized packed weight
+        layer.weight = torch.nn.Parameter(qweight, requires_grad=False)
+        layer.weight_scale = torch.nn.Parameter(qscale, requires_grad=False)
+
+        # Update input_size_per_partition to padded size so that Marlin
+        # sees the correct K dimension.
+        layer.input_size_per_partition = padded_k
+
+        # Prepare for Marlin kernel
+        prepare_fp4_layer_for_marlin(layer)
+
+    def apply(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        # Pad input activations to the padded K dimension if needed
+        orig_k = x.shape[-1]
+        padded_k = layer.input_size_per_partition
+        if orig_k < padded_k:
+            x = torch.nn.functional.pad(x, (0, padded_k - orig_k))
+
+        return apply_fp4_marlin_linear(
+            input=x,
+            weight=layer.weight,
+            weight_scale=layer.weight_scale,
+            weight_global_scale=None,
+            workspace=layer.workspace,
+            size_n=layer.output_size_per_partition,
+            size_k=padded_k,
+            bias=bias,
+        )
+
+
+class Mxfp4LMHeadMethod(LinearMethodBase):
+    """LM head MXFP4 quantization using the Marlin kernel.
+
+    VocabParallelEmbedding uses the same ``create_weights`` signature as
+    linear layers, so we inherit from ``LinearMethodBase``.
+    """
+
+    def create_weights(
+        self,
+        layer: torch.nn.Module,
+        input_size_per_partition: int,
+        output_partition_sizes: list[int],
+        input_size: int,
+        output_size: int,
+        params_dtype: torch.dtype,
+        **extra_weight_attrs,
+    ):
+        output_size_per_partition = sum(output_partition_sizes)
+        layer.input_size_per_partition = input_size_per_partition
+        layer.output_size_per_partition = output_size_per_partition
+        layer.original_input_size_per_partition = input_size_per_partition
+        layer.params_dtype = params_dtype
+
+        weight_loader = extra_weight_attrs.pop("weight_loader", None)
+        weight = torch.nn.Parameter(
+            torch.empty(
+                output_size_per_partition,
+                input_size_per_partition,
+                dtype=params_dtype,
+            ),
+            requires_grad=False,
+        )
+        set_weight_attrs(weight, {"input_dim": 1, "output_dim": 0})
+        if weight_loader is not None:
+            set_weight_attrs(weight, {"weight_loader": weight_loader})
+        layer.register_parameter("weight", weight)
+        set_weight_attrs(weight, extra_weight_attrs)
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        weight = layer.weight.data
+        orig_k = layer.original_input_size_per_partition
+        padded_k = get_padding_alignment(orig_k, 32)
+
+        if padded_k > orig_k:
+            padded_weight = torch.zeros(
+                weight.shape[0],
+                padded_k,
+                dtype=weight.dtype,
+                device=weight.device,
+            )
+            padded_weight[:, :orig_k] = weight
+            weight = padded_weight
+
+        qweight, qscale = mxfp4_e2m1_quantize(weight)
+
+        layer.weight = torch.nn.Parameter(qweight, requires_grad=False)
+        layer.weight_scale = torch.nn.Parameter(qscale, requires_grad=False)
+        layer.input_size_per_partition = padded_k
+
+        prepare_fp4_layer_for_marlin(layer)
+
+    def apply(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        orig_k = x.shape[-1]
+        padded_k = layer.input_size_per_partition
+        if orig_k < padded_k:
+            x = torch.nn.functional.pad(x, (0, padded_k - orig_k))
+
+        return apply_fp4_marlin_linear(
+            input=x,
+            weight=layer.weight,
+            weight_scale=layer.weight_scale,
+            weight_global_scale=None,
+            workspace=layer.workspace,
+            size_n=layer.output_size_per_partition,
+            size_k=padded_k,
+            bias=bias,
         )
 
 

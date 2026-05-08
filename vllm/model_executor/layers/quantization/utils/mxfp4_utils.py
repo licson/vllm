@@ -166,3 +166,104 @@ except AttributeError as error:
 
 def xpu_mxfp4_quantize(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.ops.vllm.xpu_mxfp4_quantize(x)
+
+
+def _cast_to_fp4(x: torch.Tensor) -> torch.Tensor:
+    """Round float values to the nearest E2M1 representable value.
+
+    Matches the thresholds used by the reference MXFP4 implementation.
+    """
+    sign = torch.sign(x)
+    abs_x = x.abs()
+    result = torch.where(abs_x > 5.0, 6.0, 0.0)
+    result = torch.where((abs_x >= 3.5) & (abs_x <= 5.0), 4.0, result)
+    result = torch.where((abs_x > 2.5) & (abs_x < 3.5), 3.0, result)
+    result = torch.where((abs_x >= 1.75) & (abs_x <= 2.5), 2.0, result)
+    result = torch.where((abs_x > 1.25) & (abs_x < 1.75), 1.5, result)
+    result = torch.where((abs_x >= 0.75) & (abs_x <= 1.25), 1.0, result)
+    result = torch.where((abs_x > 0.25) & (abs_x < 0.75), 0.5, result)
+    return result * sign
+
+
+def _float_to_e2m1_nibble(x: torch.Tensor) -> torch.Tensor:
+    """Convert float values (already rounded to E2M1) to 4-bit codes.
+
+    Returns uint8 tensor with values in [0, 15].
+    """
+    sign = (x < 0).to(torch.uint8) << 3
+    abs_x = x.abs()
+    mag = torch.zeros_like(abs_x, dtype=torch.uint8)
+    mag = torch.where(abs_x >= 6.0, 7, mag)
+    mag = torch.where((abs_x >= 4.0) & (abs_x < 6.0), 6, mag)
+    mag = torch.where((abs_x >= 3.0) & (abs_x < 4.0), 5, mag)
+    mag = torch.where((abs_x >= 2.0) & (abs_x < 3.0), 4, mag)
+    mag = torch.where((abs_x >= 1.5) & (abs_x < 2.0), 3, mag)
+    mag = torch.where((abs_x >= 1.0) & (abs_x < 1.5), 2, mag)
+    mag = torch.where((abs_x >= 0.5) & (abs_x < 1.0), 1, mag)
+    return sign | mag
+
+
+def mxfp4_e2m1_quantize(
+    x: torch.Tensor,
+    group_size: int = 32,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize a float tensor to MXFP4 (E2M1 weights + E8M0 block scales).
+
+    Args:
+        x: Float tensor of shape (..., K). K will be padded to a multiple
+           of ``group_size`` (32) if necessary.
+        group_size: Block size for quantization. Must be 32 for MXFP4.
+
+    Returns:
+        qweight: uint8 tensor of shape (..., K//2) with two E2M1 values
+                 packed per byte (lower nibble first).
+        scale: uint8 tensor of shape (..., K//group_size) with E8M0
+               scale values.
+    """
+    assert x.dtype in (torch.float16, torch.bfloat16)
+    assert group_size == 32, "MXFP4 requires group_size=32"
+
+    orig_k = x.shape[-1]
+    pad_k = ((orig_k + group_size - 1) // group_size) * group_size
+    if pad_k > orig_k:
+        x = torch.nn.functional.pad(x, (0, pad_k - orig_k))
+
+    # Reshape to blocks
+    x_blocks = x.reshape(-1, group_size)
+
+    # Per-block max abs value
+    block_max = x_blocks.abs().max(dim=-1).values.to(torch.float32)
+
+    # Compute E8M0 scale exponent.
+    # E8M0 represents 2^(exp - 127). We choose exp so that
+    # scale = 2^(floor(log2(block_max)) - 2), which matches the
+    # reference MXFP4 implementation.
+    log2_max = torch.floor(torch.log2(block_max.clamp(min=1e-30)))
+    scale_exp = (127 + log2_max - 2).to(torch.int32)
+    scale_exp = torch.clamp(scale_exp, 0, 254)
+
+    # E8M0 scale bytes
+    scale = scale_exp.to(torch.uint8)
+
+    # Convert scale back to float for quantization
+    scale_float = (2.0 ** (scale_exp.float() - 127.0)).to(x.dtype)
+
+    # Quantize: divide by scale, clamp, round to E2M1
+    x_scaled = x / scale_float.reshape(x.shape[:-1] + (1,))
+    x_scaled = x_scaled.clamp(-6.0, 6.0)
+    x_fp4 = _cast_to_fp4(x_scaled)
+
+    # Convert to nibbles and pack
+    nibbles = _float_to_e2m1_nibble(x_fp4)
+    nibbles = nibbles.reshape(*x.shape[:-1], -1, 2)
+    packed = (nibbles[..., 1] << 4) | nibbles[..., 0]
+
+    # Reshape outputs
+    scale = scale.reshape(x.shape[:-1] + (pad_k // group_size,))
+
+    return packed, scale
+
+
+def get_padding_alignment(input_size: int, alignment: int = 32) -> int:
+    """Return the padded size for the given input size."""
+    return ((input_size + alignment - 1) // alignment) * alignment
