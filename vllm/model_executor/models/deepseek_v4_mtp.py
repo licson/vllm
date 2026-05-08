@@ -29,6 +29,7 @@ from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
+from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
@@ -58,6 +59,42 @@ logger = init_logger(__name__)
 _EXPERT_SCALE_RE = re.compile(r"\.experts\.\d+\.w[123]\.scale$")
 
 
+def _get_layer_quant_config(
+    prefix: str,
+    layer_name: str,
+    quant_config: QuantizationConfig | None,
+) -> QuantizationConfig | None:
+    """Return quant_config only if the layer is targeted for quantization."""
+    if quant_config is None:
+        return None
+
+    # Only compressed-tensors needs this check; other quantizers pass through.
+    if not hasattr(quant_config, "target_scheme_map"):
+        return quant_config
+
+    layer_prefix = f"{prefix}.{layer_name}"
+
+    from vllm.model_executor.layers.quantization.compressed_tensors.utils import (
+        find_matched_target,
+        should_ignore_layer,
+    )
+
+    if should_ignore_layer(
+        layer_prefix,
+        ignore=quant_config.ignore,
+        fused_mapping=quant_config.packed_modules_mapping,
+    ):
+        return None
+
+    matched = find_matched_target(
+        layer_name=layer_prefix,
+        module=ReplicatedLinear,
+        targets=quant_config.target_scheme_map.keys(),
+        fused_mapping=quant_config.packed_modules_mapping,
+    )
+    return quant_config if matched is not None else None
+
+
 class DeepSeekV4MultiTokenPredictorLayer(nn.Module):
     def __init__(
         self,
@@ -83,14 +120,16 @@ class DeepSeekV4MultiTokenPredictorLayer(nn.Module):
             config.hidden_size,
             bias=False,
             return_bias=False,
-            quant_config=quant_config,
+            quant_config=_get_layer_quant_config(prefix, "e_proj", quant_config),
+            prefix=f"{prefix}.e_proj",
         )
         self.h_proj = ReplicatedLinear(
             config.hidden_size,
             config.hidden_size,
             bias=False,
             return_bias=False,
-            quant_config=quant_config,
+            quant_config=_get_layer_quant_config(prefix, "h_proj", quant_config),
+            prefix=f"{prefix}.h_proj",
         )
 
         self.hc_eps = config.hc_eps
