@@ -363,6 +363,12 @@ class FlashMLASparseMetadataBuilder(AttentionMetadataBuilder[FlashMLASparseMetad
             device=device,
         )
 
+        # Full CUDA graphs require topk_length / extra_topk_length to be
+        # constant between capture and replay for the FlashMLA tile scheduler.
+        self.needs_constant_topk = (
+            vllm_config.compilation_config.cudagraph_mode.has_full_cudagraphs()
+        )
+
         # DeepseekV4: has compress_ratios in hf_config.
         hf_config = vllm_config.model_config.hf_config
         self.is_deepseek_v4 = (
@@ -711,6 +717,7 @@ class FlashMLASparseMetadataBuilder(AttentionMetadataBuilder[FlashMLASparseMetad
             self.c128a_decode_lens_buffer,
             self.c128a_prefill_buffer,
             max_compressed_tokens=self.c128a_max_compressed,
+            needs_constant_topk=self.needs_constant_topk,
         )
 
         result: dict[str, torch.Tensor | None] = {}
@@ -1079,6 +1086,7 @@ def build_c128a_topk_metadata(
     decode_lens_buffer: torch.Tensor,
     prefill_buffer: torch.Tensor,
     max_compressed_tokens: int = 8192,
+    needs_constant_topk: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Single kernel for all C128A tokens (decode + prefill).
 
@@ -1114,6 +1122,7 @@ def build_c128a_topk_metadata(
         block_size,
         slot_mapping,
         BLOCK_SIZE=1024,
+        CONSTANT_TOPK_LEN=needs_constant_topk,
     )
     return global_decode, decode_lens, prefill_local
 
@@ -1138,6 +1147,7 @@ def _build_c128a_topk_metadata_kernel(
     block_size,
     slot_mapping_ptr,
     BLOCK_SIZE: tl.constexpr,
+    CONSTANT_TOPK_LEN: tl.constexpr = False,
 ):
     token_idx = tl.program_id(0)
     position = tl.load(positions_ptr + token_idx)
@@ -1170,10 +1180,13 @@ def _build_c128a_topk_metadata_kernel(
             )
             count += tl.sum(is_valid.to(tl.int32), axis=0)
 
-        tl.store(
-            decode_lens_ptr + token_idx,
-            tl.where(is_valid_token, count, 0),
-        )
+        if CONSTANT_TOPK_LEN:
+            tl.store(decode_lens_ptr + token_idx, max_compressed_tokens)
+        else:
+            tl.store(
+                decode_lens_ptr + token_idx,
+                tl.where(is_valid_token, count, 0),
+            )
     else:
         # --- Prefill: write local indices ---
         pfx_idx = token_idx - num_decode_tokens
