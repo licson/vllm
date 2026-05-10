@@ -528,11 +528,15 @@ class BaseOAITritonExperts(mk.FusedMoEExpertsModular):
         cap = p.get_device_capability()
         if cap is None:
             return False
-        # (9,0) <= cap < (11,0) covers CUDA SM90 (Hopper), SM100+ (Blackwell)
-        # and ROCm gfx942/gfx950 (which map to 9.4/9.5).
+        # (9,0) <= cap < (13,0) covers CUDA SM90 (Hopper), SM100+ (datacenter
+        # Blackwell), SM120/SM121 (consumer Blackwell — RTX 50-series, GB10
+        # /DGX Spark) and ROCm gfx942/gfx950 (which map to 9.4/9.5). The Triton
+        # MXFP4 kernels are JIT-compiled and run on any sm>=90 the Triton
+        # backend supports; the upper bound just excludes archs where the
+        # comment-author was not yet sure.
         if not has_triton_kernels():
             return False
-        return (9, 0) <= (cap.major, cap.minor) < (11, 0)
+        return (9, 0) <= (cap.major, cap.minor) < (13, 0)
 
     @staticmethod
     def _supports_no_act_and_mul() -> bool:
@@ -942,11 +946,15 @@ class OAITritonMxfp4ExpertsMonolithic(mk.FusedMoEExpertsMonolithic):
         cap = p.get_device_capability()
         if cap is None:
             return False
-        # (9,0) <= cap < (11,0) covers CUDA SM90 (Hopper), SM100+ (Blackwell)
-        # and ROCm gfx942/gfx950 (which map to 9.4/9.5).
+        # (9,0) <= cap < (13,0) covers CUDA SM90 (Hopper), SM100+ (datacenter
+        # Blackwell), SM120/SM121 (consumer Blackwell — RTX 50-series, GB10
+        # /DGX Spark) and ROCm gfx942/gfx950 (which map to 9.4/9.5). The Triton
+        # MXFP4 kernels are JIT-compiled and run on any sm>=90 the Triton
+        # backend supports; the upper bound just excludes archs where the
+        # comment-author was not yet sure.
         if not has_triton_kernels():
             return False
-        return (9, 0) <= (cap.major, cap.minor) < (11, 0)
+        return (9, 0) <= (cap.major, cap.minor) < (13, 0)
 
     @staticmethod
     def _supports_no_act_and_mul() -> bool:
