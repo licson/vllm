@@ -323,14 +323,9 @@ RUN uv pip install --system --python python3.12 --break-system-packages \
     /tmp/wheels/*.whl \
     && rm -rf /tmp/wheels
 
-# Patch nvidia-cutlass-dsl for SM121a support
+# Install latest nvidia-cutlass-dsl (>=4.5.0 has native sm_121a support)
 RUN uv pip install --system --python python3.12 --break-system-packages \
-    "nvidia-cutlass-dsl==4.4.2"
-RUN CUTE_DSL_MMA_PY=$(python3 -c \
-    "import nvidia_cutlass_dsl; print(nvidia_cutlass_dsl.__path__[0])")/cute/nvgpu/warp/mma.py \
-    && sed -i 's/sm_120a/sm_121a/g' "$CUTE_DSL_MMA_PY" \
-    && grep -q sm_121a "$CUTE_DSL_MMA_PY" \
-    && echo "CUTLASS SM121 patch applied OK"
+    "nvidia-cutlass-dsl>=4.5.0"
 
 # Fix Triton to use system ptxas for Blackwell (sm_120/sm_121) support (CUDA 13+)
 RUN if [ "${CUDA_VERSION%%.*}" = "13" ] && [ -d /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin ]; then \

@@ -18,13 +18,13 @@ The Dockerfile uses a **multi-stage wheel-based** design modeled after `licson/s
    - `flashinfer_builder` — FlashInfer with Blackwell PRs (3174, 3180)
    - `deepgemm_builder` — DeepGEMM `sm120` branch (DeepGEMM#324)
    - `vllm_builder` — vLLM `pr-ports` branch
-4. **`framework`** — Assemble & install all wheels, apply CUTLASS SM121 patch, Triton ptxas fix
+4. **`framework`** — Assemble & install all wheels, install latest `nvidia-cutlass-dsl` (native `sm_121a`), Triton ptxas fix
 5. **`runtime`** — Clean image with only runtime libs and installed packages (no source code)
 
 ## Key optimizations included
 
 1. **Native SM12x cubins** — `TORCH_CUDA_ARCH_LIST="12.0;12.1"` (no PTX JIT fallback).
-2. **CUTLASS SM121 patch** — Fixes `nvidia-cutlass-dsl` `warp/mma.py` to accept `sm_121a`.
+2. **CUTLASS SM121 native** — `nvidia-cutlass-dsl>=4.5.0` has upstream `sm_121a` support (no patching needed).
 3. **DeepGEMM#324** — Builds `deepseek-ai/DeepGEMM@sm120` for native SM120 grouped/dense GEMM and attention kernels.
 4. **FlashInfer b12x** — Built from source with Blackwell PRs merged, arch `12.1a`.
 5. **DeepEP** — Expert parallelism library with SM12x-compatible timeout configs.
