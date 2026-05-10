@@ -257,7 +257,7 @@ WORKDIR /build
 RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
     cd /repo-cache && \
     if [ ! -d "DeepGEMM" ]; then \
-        git clone --recursive https://github.com/deepseek-ai/DeepGEMM.git; \
+        git clone --recursive https://github.com/leavelet/DeepGEMM.git; \
     fi \
     && cd DeepGEMM \
     && git fetch origin \
