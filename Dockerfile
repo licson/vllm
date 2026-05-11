@@ -335,7 +335,7 @@ RUN if [ "${CUDA_VERSION%%.*}" = "13" ] && [ -d /usr/local/lib/python3.12/dist-p
 
 # Additional runtime deps
 RUN uv pip install --system --python python3.12 --break-system-packages \
-    fastsafetensors ray[default]
+    fastsafetensors ray[default] instanttensor
 
 # Smoke test
 RUN python3 -c "import vllm; import flashinfer; import deep_gemm; print('vLLM SM12x framework OK')"
@@ -347,11 +347,19 @@ RUN python3 -c "import vllm; import flashinfer; import deep_gemm; print('vLLM SM
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu24.04 AS runtime
 
 ARG CUDA_VERSION
+ARG MAX_JOBS=8
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    CUDA_HOME=/usr/local/cuda
+    CUDA_HOME=/usr/local/cuda \
+    VLLM_BASE_DIR=/workspace/vllm
 
-ENV PATH="${PATH}:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/cuda/nvvm/bin" \
+# JIT compilation may occur at runtime (Triton, DeepGEMM); mirror build parallelism
+ENV MAX_JOBS=${MAX_JOBS} \
+    CMAKE_BUILD_PARALLEL_LEVEL=${MAX_JOBS} \
+    DG_JIT_USE_NVRTC=1 \
+    USE_CUDNN=1
+
+ENV PATH="${PATH}:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/cuda/nvvm/bin:${VLLM_BASE_DIR}" \
     LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
 
 # Install runtime dependencies only (no build tools, no ccache)
@@ -365,9 +373,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends --allow-change-
     locales \
     python3.12-full \
     python3.12-dev \
+    libcudnn9-cuda-13 \
     libopenmpi3 \
     libnuma1 \
     libibverbs1 \
+    libibverbs-dev \
     libibumad3 \
     librdmacm1 \
     libnl-3-200 \
@@ -388,6 +398,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends --allow-change-
     libczmq4 \
     libfabric1 \
     libssl3 \
+    libxcb1 \
     ninja-build \
     libnccl2 \
     libnccl-dev \
@@ -420,11 +431,27 @@ RUN if [ "${CUDA_VERSION%%.*}" = "13" ] && [ -d /usr/local/lib/python3.12/dist-p
         ln -s /usr/local/cuda/bin/ptxas /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin/ptxas; \
     fi
 
+# Ensure system NCCL takes precedence over any pip-bundled copy
+RUN nccl_pip="/usr/local/lib/python3.12/dist-packages/nvidia/nccl/lib/libnccl.so.2" && \
+    nccl_sys="/usr/lib/$(uname -m)-linux-gnu/libnccl.so.2" && \
+    if [ -f "$nccl_pip" ] && [ -f "$nccl_sys" ]; then \
+        rm -f "$nccl_pip" && ln -s "$nccl_sys" "$nccl_pip"; \
+    fi
+
+# Download Tiktoken encodings to avoid runtime network fetches
+RUN mkdir -p ${VLLM_BASE_DIR}/tiktoken_encodings && \
+    wget -O ${VLLM_BASE_DIR}/tiktoken_encodings/o200k_base.tiktoken \
+        "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken" && \
+    wget -O ${VLLM_BASE_DIR}/tiktoken_encodings/cl100k_base.tiktoken \
+        "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
+
+# Runtime environment
+ENV TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas \
+    TIKTOKEN_ENCODINGS_BASE=${VLLM_BASE_DIR}/tiktoken_encodings
+
 # SM12x runtime tuning defaults
 ENV VLLM_WORKER_MULTIPROC_METHOD=spawn
 ENV NCCL_MIN_NCHANNELS=32
 
 WORKDIR /workspace
 EXPOSE 8000
-
-ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
