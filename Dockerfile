@@ -308,7 +308,7 @@ RUN sed -i "/flashinfer/d" requirements/cuda.txt \
     && sed -i '/^triton\b/d' requirements/test/cuda.txt \
     && sed -i '/^fastsafetensors\b/d' requirements/test/cuda.txt \
     && python3 use_existing_torch.py \
-    && uv pip install -r requirements/build/cuda.txt
+    && uv pip install --system --python python3.12 --break-system-packages -r requirements/build/cuda.txt
 
 RUN --mount=type=cache,id=ccache,target=/root/.ccache \
     TORCH_CUDA_ARCH_LIST="12.0;12.1" MAX_JOBS=${MAX_JOBS} \
