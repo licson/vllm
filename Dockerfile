@@ -230,7 +230,7 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache \
     && python3 -m pip wheel . --no-deps --no-build-isolation -w /wheels
 
 # Build flashinfer-cubin wheel (requires main flashinfer package installed)
-RUN uv pip install --system --python python3.12 --break-system-packages --no-deps /wheels/flashinfer*.whl \
+RUN uv pip install --system --python python3.12 --break-system-packages /wheels/flashinfer*.whl \
     && uv pip install --system --python python3.12 --break-system-packages build \
     && cd /build/flashinfer/flashinfer-cubin \
     && python3 -m build --no-isolation --wheel \
