@@ -306,43 +306,7 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache \
 
 
 # =============================================================================
-# Framework Stage: Assemble everything
-# =============================================================================
-FROM torch_deps AS framework
-
-WORKDIR /workspace
-
-# Copy built wheels from parallel stages
-COPY --from=deepep_builder /wheels /tmp/wheels
-COPY --from=flashinfer_builder /wheels /tmp/wheels
-COPY --from=deepgemm_builder /wheels /tmp/wheels
-COPY --from=vllm_builder /wheels /tmp/wheels
-
-# Install all wheels
-RUN uv pip install --system --python python3.12 --break-system-packages \
-    /tmp/wheels/*.whl \
-    && rm -rf /tmp/wheels
-
-# Install latest nvidia-cutlass-dsl (>=4.5.0 has native sm_121a support)
-RUN uv pip install --system --python python3.12 --break-system-packages \
-    "nvidia-cutlass-dsl>=4.5.0"
-
-# Fix Triton to use system ptxas for Blackwell (sm_120/sm_121) support (CUDA 13+)
-RUN if [ "${CUDA_VERSION%%.*}" = "13" ] && [ -d /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin ]; then \
-        rm -f /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin/ptxas && \
-        ln -s /usr/local/cuda/bin/ptxas /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin/ptxas; \
-    fi
-
-# Additional runtime deps
-RUN uv pip install --system --python python3.12 --break-system-packages \
-    fastsafetensors ray[default] instanttensor
-
-# Smoke test
-RUN python3 -c "import vllm; import flashinfer; import deep_gemm; print('vLLM SM12x framework OK')"
-
-
-# =============================================================================
-# Runtime Stage
+# Runtime Stage: Install wheels directly from builder stages
 # =============================================================================
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu24.04 AS runtime
 
@@ -353,11 +317,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME=/usr/local/cuda \
     VLLM_BASE_DIR=/workspace/vllm
 
-# JIT compilation may occur at runtime (Triton, DeepGEMM); mirror build parallelism
+# JIT compilation may occur at runtime (Triton, DeepGEMM)
 ENV MAX_JOBS=${MAX_JOBS} \
     CMAKE_BUILD_PARALLEL_LEVEL=${MAX_JOBS} \
     DG_JIT_USE_NVRTC=1 \
     USE_CUDNN=1
+
+ENV UV_SYSTEM_PYTHON=1 \
+    UV_BREAK_SYSTEM_PACKAGES=1 \
+    UV_LINK_MODE=copy \
+    UV_CACHE_DIR=/root/.cache/uv
 
 ENV PATH="${PATH}:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/cuda/nvvm/bin:${VLLM_BASE_DIR}" \
     LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
@@ -419,17 +388,39 @@ ENV LANG=en_US.UTF-8 \
     LANGUAGE=en_US:en \
     LC_ALL=en_US.UTF-8
 
-# Copy Python packages from framework
-COPY --from=framework /usr/local/lib/python3.12/dist-packages /usr/local/lib/python3.12/dist-packages
+# Install uv
+RUN pip install uv --break-system-packages
 
 # Fix DeepEP IBGDA symlink
 RUN ln -sf /usr/lib/$(uname -m)-linux-gnu/libmlx5.so.1 /usr/lib/$(uname -m)-linux-gnu/libmlx5.so
 
-# Fix Triton ptxas for Blackwell
+# Download Tiktoken encodings to avoid runtime network fetches
+RUN mkdir -p ${VLLM_BASE_DIR}/tiktoken_encodings && \
+    wget -O ${VLLM_BASE_DIR}/tiktoken_encodings/o200k_base.tiktoken \
+        "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken" && \
+    wget -O ${VLLM_BASE_DIR}/tiktoken_encodings/cl100k_base.tiktoken \
+        "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
+
+# Install PyTorch ecosystem first (ensures CUDA 13 variants)
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
+    uv pip install --extra-index-url https://download.pytorch.org/whl/cu130 \
+    torch torchvision torchaudio triton
+
+# Fix Triton ptxas for Blackwell (after triton is installed)
 RUN if [ "${CUDA_VERSION%%.*}" = "13" ] && [ -d /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin ]; then \
         rm -f /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin/ptxas && \
         ln -s /usr/local/cuda/bin/ptxas /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin/ptxas; \
     fi
+
+# Copy and install all built wheels
+COPY --from=deepep_builder /wheels /tmp/wheels
+COPY --from=flashinfer_builder /wheels /tmp/wheels
+COPY --from=deepgemm_builder /wheels /tmp/wheels
+COPY --from=vllm_builder /wheels /tmp/wheels
+
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
+    uv pip install /tmp/wheels/*.whl \
+    && rm -rf /tmp/wheels
 
 # Ensure system NCCL takes precedence over any pip-bundled copy
 RUN nccl_pip="/usr/local/lib/python3.12/dist-packages/nvidia/nccl/lib/libnccl.so.2" && \
@@ -438,12 +429,13 @@ RUN nccl_pip="/usr/local/lib/python3.12/dist-packages/nvidia/nccl/lib/libnccl.so
         rm -f "$nccl_pip" && ln -s "$nccl_sys" "$nccl_pip"; \
     fi
 
-# Download Tiktoken encodings to avoid runtime network fetches
-RUN mkdir -p ${VLLM_BASE_DIR}/tiktoken_encodings && \
-    wget -O ${VLLM_BASE_DIR}/tiktoken_encodings/o200k_base.tiktoken \
-        "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken" && \
-    wget -O ${VLLM_BASE_DIR}/tiktoken_encodings/cl100k_base.tiktoken \
-        "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
+# Install latest nvidia-cutlass-dsl (>=4.5.0 has native sm_121a support)
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
+    uv pip install "nvidia-cutlass-dsl>=4.5.0"
+
+# Additional runtime deps
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
+    uv pip install fastsafetensors ray[default] instanttensor
 
 # Runtime environment
 ENV TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas \
@@ -455,3 +447,9 @@ ENV NCCL_MIN_NCHANNELS=32
 
 WORKDIR /workspace
 EXPOSE 8000
+
+ENTRYPOINT []
+CMD ["/bin/bash"]
+
+# Smoke test
+RUN python3 -c "import vllm; import flashinfer; import deep_gemm; print('vLLM SM12x runtime OK')"
