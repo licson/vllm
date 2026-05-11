@@ -407,8 +407,11 @@ RUN mkdir -p ${VLLM_BASE_DIR}/tiktoken_encodings && \
 # Install PyTorch ecosystem first (ensures CUDA 13 variants)
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv pip install --index-url https://download.pytorch.org/whl/cu130 \
-    torch==2.11.0 torchvision torchaudio triton \
-    nvidia-nvshmem-cu13 "apache-tvm-ffi<0.2"
+    torch==2.11.0 torchvision torchaudio triton
+
+# Install extras that are not on the PyTorch index
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
+    uv pip install nvidia-nvshmem-cu13 "apache-tvm-ffi<0.2"
 
 # Fix Triton ptxas for Blackwell (after triton is installed)
 RUN if [ "${CUDA_VERSION%%.*}" = "13" ] && [ -d /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin ]; then \
