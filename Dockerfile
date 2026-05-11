@@ -3,7 +3,7 @@
 # Multi-stage Dockerfile for vLLM on SM12x (SM120/SM121) consumer Blackwell.
 # Modeled after licson/sglang forked-sglang-docker-build and eugr/spark-vllm-docker.
 
-ARG CUDA_VERSION=13.0.1
+ARG CUDA_VERSION=13.2.0
 ARG PYTHON_VERSION=3.12
 ARG TORCH_CUDA_ARCH_LIST="12.0;12.1"
 ARG FLASHINFER_CUDA_ARCH_LIST="12.1a"
@@ -12,7 +12,7 @@ ARG MAX_JOBS=8
 # =============================================================================
 # Base Stage: CUDA 13.0 + Ubuntu 24.04 + System Dependencies
 # =============================================================================
-FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu24.04 AS base
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS base
 
 ARG CUDA_VERSION
 ARG PYTHON_VERSION
@@ -136,8 +136,12 @@ WORKDIR /workspace
 
 # PyTorch ecosystem (cu130)
 RUN uv pip install --system --python python3.12 --break-system-packages \
-    --extra-index-url https://download.pytorch.org/whl/cu130 \
-    torch torchvision torchaudio ninja wheel packaging build setuptools setuptools-scm
+    --index-url https://download.pytorch.org/whl/cu130 \
+    torch==2.11.0 torchvision torchaudio triton
+    
+RUN uv pip install --system --python python3.12 --break-system-packages \
+    nvidia-nvshmem-cu13 "apache-tvm-ffi<0.2" filelock pynvml requests tqdm \
+    ninja wheel packaging build setuptools setuptools-scm
 
 # vLLM build deps (shallow clone just to resolve build requirements)
 RUN git clone --depth=1 -b pr-ports https://github.com/licson/vllm.git /tmp/vllm \
@@ -300,8 +304,11 @@ RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
 WORKDIR /build/vllm
 
 # Remove flashinfer from requirements since we build it separately
-RUN sed -i "/flashinfer/d" requirements/cuda.txt 2>/dev/null || true \
-    && python3 use_existing_torch.py
+RUN sed -i "/flashinfer/d" requirements/cuda.txt \
+    && sed -i '/^triton\b/d' requirements/test/cuda.txt \
+    && sed -i '/^fastsafetensors\b/d' requirements/test/cuda.txt \
+    && python3 use_existing_torch.py \
+    && uv pip install -r requirements/build/cuda.txt
 
 RUN --mount=type=cache,id=ccache,target=/root/.ccache \
     TORCH_CUDA_ARCH_LIST="12.0;12.1" MAX_JOBS=${MAX_JOBS} \
@@ -311,7 +318,7 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache \
 # =============================================================================
 # Runtime Stage: Install wheels directly from builder stages
 # =============================================================================
-FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu24.04 AS runtime
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS runtime
 
 ARG CUDA_VERSION
 ARG MAX_JOBS=8
@@ -412,12 +419,6 @@ RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
 # Install extras that are not on the PyTorch index
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv pip install nvidia-nvshmem-cu13 "apache-tvm-ffi<0.2"
-
-# Fix Triton ptxas for Blackwell (after triton is installed)
-RUN if [ "${CUDA_VERSION%%.*}" = "13" ] && [ -d /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin ]; then \
-        rm -f /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin/ptxas && \
-        ln -s /usr/local/cuda/bin/ptxas /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin/ptxas; \
-    fi
 
 # Copy and install all built wheels
 COPY --from=deepep_builder /wheels /tmp/wheels
