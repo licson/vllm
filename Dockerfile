@@ -280,6 +280,9 @@ FROM torch_deps AS vllm_builder
 ARG VLLM_BRANCH=pr-ports
 ARG MAX_JOBS
 
+# Cache buster: increment this to force vLLM rebuild without rebuilding DeepEP/FlashInfer/DeepGEMM
+ARG CACHEBUST_VLLM=1
+
 WORKDIR /build
 
 RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
@@ -403,8 +406,9 @@ RUN mkdir -p ${VLLM_BASE_DIR}/tiktoken_encodings && \
 
 # Install PyTorch ecosystem first (ensures CUDA 13 variants)
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    uv pip install --extra-index-url https://download.pytorch.org/whl/cu130 \
-    torch torchvision torchaudio triton
+    uv pip install --index-url https://download.pytorch.org/whl/cu130 \
+    torch==2.11.0 torchvision torchaudio triton \
+    nvidia-nvshmem-cu13 "apache-tvm-ffi<0.2"
 
 # Fix Triton ptxas for Blackwell (after triton is installed)
 RUN if [ "${CUDA_VERSION%%.*}" = "13" ] && [ -d /usr/local/lib/python3.12/dist-packages/triton/backends/nvidia/bin ]; then \
