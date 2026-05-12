@@ -360,7 +360,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # JIT compilation may occur at runtime (Triton, DeepGEMM)
 ENV MAX_JOBS=${MAX_JOBS} \
     CMAKE_BUILD_PARALLEL_LEVEL=${MAX_JOBS} \
-    DG_JIT_USE_NVRTC=1 \
     USE_CUDNN=1
 
 ENV UV_SYSTEM_PYTHON=1 \
