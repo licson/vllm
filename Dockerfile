@@ -277,6 +277,34 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache \
 
 
 # =============================================================================
+# TileLang Builder Stage
+# =============================================================================
+FROM torch_deps AS tilelang_builder
+
+ARG MAX_JOBS
+ARG TILELANG_VERSION=v0.1.9
+
+WORKDIR /build
+
+RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
+    cd /repo-cache && \
+    if [ ! -d "tilelang" ]; then \
+        git clone --recursive https://github.com/tile-ai/tilelang.git; \
+    fi \
+    && cd tilelang \
+    && git fetch origin \
+    && git checkout ${TILELANG_VERSION} \
+    && git submodule update --init --recursive \
+    && git clean -fdx \
+    && cp -a /repo-cache/tilelang /build/tilelang
+
+WORKDIR /build/tilelang
+
+RUN --mount=type=cache,id=ccache,target=/root/.ccache \
+    python3 -m pip wheel . --no-deps --no-build-isolation -w /wheels
+
+
+# =============================================================================
 # vLLM Builder Stage
 # =============================================================================
 FROM torch_deps AS vllm_builder
@@ -303,8 +331,9 @@ RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
 
 WORKDIR /build/vllm
 
-# Remove flashinfer from requirements since we build it separately
+# Remove flashinfer and tilelang from requirements since we build them separately
 RUN sed -i "/flashinfer/d" requirements/cuda.txt \
+    && sed -i "/tilelang/d" requirements/cuda.txt \
     && sed -i '/^triton\b/d' requirements/test/cuda.txt \
     && sed -i '/^fastsafetensors\b/d' requirements/test/cuda.txt \
     && python3 use_existing_torch.py \
@@ -420,10 +449,15 @@ RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv pip install nvidia-nvshmem-cu13 "apache-tvm-ffi<0.2"
 
+# Install TileLang runtime dependencies (wheel was built --no-deps from source)
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
+    uv pip install "torch-c-dlpack-ext" cloudpickle "ml-dtypes" "tqdm>=4.62.3" "typing-extensions>=4.10.0" "z3-solver>=4.13.0,<4.15.5"
+
 # Copy and install all built wheels
 COPY --from=deepep_builder /wheels /tmp/wheels
 COPY --from=flashinfer_builder /wheels /tmp/wheels
 COPY --from=deepgemm_builder /wheels /tmp/wheels
+COPY --from=tilelang_builder /wheels /tmp/wheels
 COPY --from=vllm_builder /wheels /tmp/wheels
 
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
