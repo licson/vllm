@@ -369,7 +369,8 @@ ENV UV_SYSTEM_PYTHON=1 \
     UV_CACHE_DIR=/root/.cache/uv
 
 ENV PATH="${PATH}:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/cuda/nvvm/bin:${VLLM_BASE_DIR}" \
-    LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+    LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/local/nvidia/lib:/usr/local/nvidia/lib64" \
+    LD_PRELOAD=/usr/local/cuda/lib64/libnvrtc.so
 
 # Install runtime dependencies only (no build tools, no ccache)
 RUN apt-get update && apt-get install -y --no-install-recommends --allow-change-held-packages \
