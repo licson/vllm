@@ -425,6 +425,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends --allow-change-
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
+# Fix CUDA 13 CCCL header paths for JIT compilation (DeepGEMM, Triton, etc.)
+RUN ln -sf /usr/local/cuda/include/cccl/cuda /usr/local/cuda/include/cuda \
+    && ln -sf /usr/local/cuda/include/cccl/cub /usr/local/cuda/include/cub \
+    && ln -sf /usr/local/cuda/include/cccl/thrust /usr/local/cuda/include/thrust
+
 ENV LANG=en_US.UTF-8 \
     LANGUAGE=en_US:en \
     LC_ALL=en_US.UTF-8
