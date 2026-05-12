@@ -301,7 +301,8 @@ RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
 WORKDIR /build/tilelang
 
 RUN --mount=type=cache,id=ccache,target=/root/.ccache \
-    python3 -m pip wheel . --no-deps --no-build-isolation -w /wheels
+    uv pip install --system --python python3.12 --break-system-packages --no-deps scikit-build-core \
+    && python3 -m pip wheel . --no-deps --no-build-isolation -w /wheels
 
 
 # =============================================================================
