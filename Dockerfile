@@ -301,7 +301,7 @@ RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
 WORKDIR /build/tilelang
 
 RUN --mount=type=cache,id=ccache,target=/root/.ccache \
-    uv pip install --system --python python3.12 --break-system-packages scikit-build-core "z3-solver>=4.13.0,<4.15.5" \
+    uv pip install --system --python python3.12 --break-system-packages scikit-build-core "z3-solver>=4.13.0,<4.15.5" cython \
     && python3 -m pip wheel . --no-deps --no-build-isolation -w /wheels
 
 
