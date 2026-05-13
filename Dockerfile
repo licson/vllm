@@ -271,6 +271,9 @@ RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
 
 WORKDIR /build/DeepGEMM
 
+# Map all SM12x (SM120/SM121) to SM120 kernel files/function names
+RUN sed -i 's/if (major == 12 and minor != 1)/if (major == 12)/' csrc/jit/device_runtime.hpp
+
 RUN --mount=type=cache,id=ccache,target=/root/.ccache \
     TORCH_CUDA_ARCH_LIST="12.0;12.1" MAX_JOBS=${MAX_JOBS} \
     python3 -m pip wheel . --no-deps --no-build-isolation -w /wheels
