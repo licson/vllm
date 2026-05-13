@@ -182,7 +182,7 @@ def deepseek_v4_sm12x_fp8_einsum(
 def deepseek_v4_fp8_einsum_config(
     capability_major: int,
 ) -> tuple[tuple[int, int, int], bool]:
-    if capability_major == 10:
+    if capability_major in (10, 12):
         return (1, 1, 128), True
     return (1, 128, 128), False
 
