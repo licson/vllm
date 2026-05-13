@@ -470,6 +470,16 @@ RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv pip install /tmp/wheels/*.whl \
     && rm -rf /tmp/wheels
 
+# DeepGEMM only ships sm120_*.cuh kernels, but SM121 (consumer Blackwell)
+# needs them too. Symlink sm120 -> sm121 so JIT compilation succeeds.
+RUN if [ -d /usr/local/lib/python3.12/dist-packages/deep_gemm/include/deep_gemm/impls ]; then \
+        cd /usr/local/lib/python3.12/dist-packages/deep_gemm/include/deep_gemm/impls && \
+        for f in sm120_*.cuh; do \
+            target="sm121_${f#sm120_}"; \
+            [ -e "$target" ] || ln -s "$f" "$target"; \
+        done; \
+    fi
+
 # Ensure system NCCL takes precedence over any pip-bundled copy
 RUN nccl_pip="/usr/local/lib/python3.12/dist-packages/nvidia/nccl/lib/libnccl.so.2" && \
     nccl_sys="/usr/lib/$(uname -m)-linux-gnu/libnccl.so.2" && \
