@@ -161,10 +161,12 @@ FROM torch_deps AS deepep_builder
 ARG CUDA_VERSION
 ARG DEEPEP_COMMIT=9af0e0d0e74f3577af1979c9b9e1ac2cad0104ee
 ARG MAX_JOBS
+ARG CACHEBUST_DEEPEP=1
 
 WORKDIR /build
 
 RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
+    echo "Cache bust: ${CACHEBUST_DEEPEP}" && \
     cd /repo-cache && \
     if [ ! -d "DeepEP" ]; then \
         git clone https://github.com/deepseek-ai/DeepEP.git; \
@@ -197,11 +199,13 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache \
 FROM torch_deps AS flashinfer_builder
 
 ARG MAX_JOBS
+ARG CACHEBUST_FLASHINFER=1
 ARG FI_PR_NUMBERS="3174 3180"
 
 WORKDIR /build
 
 RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
+    echo "Cache bust: ${CACHEBUST_FLASHINFER}" && \
     cd /repo-cache && \
     if [ ! -d "flashinfer" ]; then \
         git clone --recursive https://github.com/flashinfer-ai/flashinfer.git; \
@@ -255,10 +259,12 @@ FROM torch_deps AS deepgemm_builder
 
 ARG DEEPGEMM_BRANCH=sm120
 ARG MAX_JOBS
+ARG CACHEBUST_DEEPGEMM=1
 
 WORKDIR /build
 
 RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
+    echo "Cache bust: ${CACHEBUST_DEEPGEMM}" && \
     cd /repo-cache && \
     if [ ! -d "DeepGEMM" ]; then \
         git clone --recursive https://github.com/leavelet/DeepGEMM.git; \
@@ -286,11 +292,13 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache \
 FROM torch_deps AS tilelang_builder
 
 ARG MAX_JOBS
+ARG CACHEBUST_TILELANG=1
 ARG TILELANG_VERSION=v0.1.9
 
 WORKDIR /build
 
 RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
+    echo "Cache bust: ${CACHEBUST_TILELANG}" && \
     cd /repo-cache && \
     if [ ! -d "tilelang" ]; then \
         git clone --recursive https://github.com/tile-ai/tilelang.git; \
@@ -317,12 +325,14 @@ FROM torch_deps AS vllm_builder
 ARG VLLM_BRANCH=pr-ports
 ARG MAX_JOBS
 
-# Cache buster: increment this to force vLLM rebuild without rebuilding DeepEP/FlashInfer/DeepGEMM
+# Cache buster: increment this ARG to force a fresh vLLM clone/build
+# (must be referenced in the RUN command below for BuildKit layer invalidation)
 ARG CACHEBUST_VLLM=1
 
 WORKDIR /build
 
 RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
+    echo "Cache bust: ${CACHEBUST_VLLM}" && \
     cd /repo-cache && \
     if [ ! -d "vllm" ]; then \
         git clone --recursive https://github.com/licson/vllm.git; \
