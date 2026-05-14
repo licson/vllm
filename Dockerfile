@@ -3,7 +3,7 @@
 # Multi-stage Dockerfile for vLLM on SM12x (SM120/SM121) consumer Blackwell.
 # Modeled after licson/sglang forked-sglang-docker-build and eugr/spark-vllm-docker.
 
-ARG CUDA_VERSION=13.2.0
+ARG CUDA_VERSION=13.0.3
 ARG PYTHON_VERSION=3.12
 ARG TORCH_CUDA_ARCH_LIST="12.0;12.1"
 ARG FLASHINFER_CUDA_ARCH_LIST="12.1a"
