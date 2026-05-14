@@ -1,9 +1,6 @@
 --- a/csrc/jit/device_runtime.hpp
 +++ b/csrc/jit/device_runtime.hpp
-@@ -93,10 +93,10 @@ public:
-         const auto [major, minor] = get_arch_pair();
-         if (major == 10 and minor != 1) {
-             if (number_only)
+@@ -93,10 +93,10 @@
                  return "100";
              return support_arch_family ? "100f" : "100a";
          }
