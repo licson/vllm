@@ -175,7 +175,8 @@ RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
     && git fetch origin \
     && git checkout ${DEEPEP_COMMIT} \
     && git submodule update --init --recursive \
-    && cp -a /repo-cache/DeepEP /build/DeepEP
+    && git clean -fdx \
+    && rm -rf /build/DeepEP && cp -a /repo-cache/DeepEP /build/DeepEP
 
 WORKDIR /build/DeepEP
 
@@ -212,10 +213,10 @@ RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
     fi \
     && cd flashinfer \
     && git fetch origin \
-    && git checkout main \
+    && git checkout -B main origin/main \
     && git submodule update --init --recursive \
     && git clean -fdx \
-    && cp -a /repo-cache/flashinfer /build/flashinfer
+    && rm -rf /build/flashinfer && cp -a /repo-cache/flashinfer /build/flashinfer
 
 WORKDIR /build/flashinfer
 
@@ -271,9 +272,10 @@ RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
     fi \
     && cd DeepGEMM \
     && git fetch origin \
-    && git checkout ${DEEPGEMM_BRANCH} \
+    && git checkout -B ${DEEPGEMM_BRANCH} origin/${DEEPGEMM_BRANCH} \
     && git submodule update --init --recursive \
-    && cp -a /repo-cache/DeepGEMM /build/DeepGEMM
+    && git clean -fdx \
+    && rm -rf /build/DeepGEMM && cp -a /repo-cache/DeepGEMM /build/DeepGEMM
 
 WORKDIR /build/DeepGEMM
 
@@ -304,11 +306,11 @@ RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
         git clone --recursive https://github.com/tile-ai/tilelang.git; \
     fi \
     && cd tilelang \
-    && git fetch origin \
+    && git fetch origin --tags --force \
     && git checkout ${TILELANG_VERSION} \
     && git submodule update --init --recursive \
     && git clean -fdx \
-    && cp -a /repo-cache/tilelang /build/tilelang
+    && rm -rf /build/tilelang && cp -a /repo-cache/tilelang /build/tilelang
 
 WORKDIR /build/tilelang
 
@@ -339,10 +341,10 @@ RUN --mount=type=cache,id=repo-cache,target=/repo-cache \
     fi \
     && cd vllm \
     && git fetch origin \
-    && git checkout ${VLLM_BRANCH} \
+    && git checkout -B ${VLLM_BRANCH} origin/${VLLM_BRANCH} \
     && git submodule update --init --recursive \
     && git clean -fdx \
-    && cp -a /repo-cache/vllm /build/vllm
+    && rm -rf /build/vllm && cp -a /repo-cache/vllm /build/vllm
 
 WORKDIR /build/vllm
 
