@@ -505,6 +505,10 @@ RUN nccl_pip="/usr/local/lib/python3.12/dist-packages/nvidia/nccl/lib/libnccl.so
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv pip install "nvidia-cutlass-dsl>=4.5.0"
 
+# Fix internal nvidia-cutlass-dsl 4.5.0 bugs (OpResultList, local_tile API, experimental module)
+COPY cutlass-dsl-4.5.0-fixes.patch /tmp/
+RUN patch -p1 -d /usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl < /tmp/cutlass-dsl-4.5.0-fixes.patch
+
 # Additional runtime deps
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv pip install fastsafetensors ray[default] instanttensor

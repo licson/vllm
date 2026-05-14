@@ -1,0 +1,37 @@
+--- python_packages/cutlass/cute/core.py
++++ python_packages/cutlass/cute/core.py
+@@ -288,7 +288,9 @@
+         if t.type.rank == 0:
+             # Handle this case separately, _cute_ir.get_leaves will return an Op in this case
+             vals = []
+         else:
+             vals = get_leaves(t, loc=loc, ip=ip)
+-            if not isinstance(vals, list):
++            if isinstance(vals, ir.OpResultList):
++                vals = list(vals)
++            elif not isinstance(vals, list):
+                 vals = [vals]
+     else:
+         raise TypeError(f"expects static type or value, but got {t}")
+@@ -4816,10 +4818,8 @@
+     return _cute_ir.local_tile(
+         input=input.value,  # type: ignore[attr-defined]
+         tile=tiler_val,
+-        static_tile=None,
+         coord=coord_val,
+-        static_coord=None,
+         proj=proj,
+         loc=loc,
+         ip=ip,
+     )
+--- python_packages/cutlass/cute/experimental/__init__.py
++++ python_packages/cutlass/cute/experimental/__init__.py
+@@ -10,6 +10,4 @@
+ # Any use, reproduction, disclosure, or distribution of this software
+ # and related documentation outside the scope permitted by the EULA
+ # is strictly prohibited.
+ 
+-raise NotImplementedError(
+-    "CuTe Experimental module is only supported on Cuda toolkit 13.1 and above!"
+-)
++# Module stubbed for compatibility with nvidia-cutlass-dsl 4.5.0
