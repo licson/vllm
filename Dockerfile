@@ -508,8 +508,8 @@ RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv pip install "nvidia-cutlass-dsl>=4.5.0"
 
 # Fix internal nvidia-cutlass-dsl 4.5.0 bugs (OpResultList, local_tile API, experimental module)
-COPY cutlass-dsl-4.5.0-fixes.patch /tmp/
-RUN patch -p0 -d /usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl < /tmp/cutlass-dsl-4.5.0-fixes.patch
+COPY cutlass-dsl-4.5.0-fixes.py /tmp/
+RUN python3 /tmp/cutlass-dsl-4.5.0-fixes.py
 
 # Additional runtime deps
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
