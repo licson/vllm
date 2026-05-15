@@ -1,5 +1,5 @@
---- python_packages/cutlass/cute/core.py
-+++ python_packages/cutlass/cute/core.py
+--- cute/core.py
++++ cute/core.py
 @@ -288,7 +288,9 @@
          if t.type.rank == 0:
              # Handle this case separately, _cute_ir.get_leaves will return an Op in this case
@@ -24,8 +24,8 @@
          loc=loc,
          ip=ip,
      )
---- python_packages/cutlass/cute/experimental/__init__.py
-+++ python_packages/cutlass/cute/experimental/__init__.py
+--- cute/experimental/__init__.py
++++ cute/experimental/__init__.py
 @@ -10,6 +10,4 @@
  # Any use, reproduction, disclosure, or distribution of this software
  # and related documentation outside the scope permitted by the EULA
