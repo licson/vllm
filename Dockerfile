@@ -503,13 +503,13 @@ RUN nccl_pip="/usr/local/lib/python3.12/dist-packages/nvidia/nccl/lib/libnccl.so
         rm -f "$nccl_pip" && ln -s "$nccl_sys" "$nccl_pip"; \
     fi
 
-# Install latest nvidia-cutlass-dsl (>=4.5.0 has native sm_121a support)
+# Install nvidia-cutlass-dsl 4.4.2 (SM121a support requires mma.py patch)
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    uv pip install "nvidia-cutlass-dsl>=4.5.0"
+    uv pip install "nvidia-cutlass-dsl==4.4.2"
 
-# Fix internal nvidia-cutlass-dsl 4.5.0 bugs (OpResultList, local_tile API, experimental module)
-COPY cutlass-dsl-4.5.0-fixes.py /tmp/
-RUN python3 /tmp/cutlass-dsl-4.5.0-fixes.py
+# Patch CUTLASS DSL 4.4.2 to accept sm_121a for warp-level MMA
+COPY cutlass-dsl-sm121-patch.py /tmp/
+RUN python3 /tmp/cutlass-dsl-sm121-patch.py
 
 # Additional runtime deps
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
