@@ -591,11 +591,17 @@ class FusedMoE(PluggableLayer):
             # we need to re-quantize w1/w3 weights after weight loading.
             idx = 0 if shard_id == "w1" else 1
             target = param_data[expert_id][idx]
-            target.copy_(self._normalize_loaded_weight_for_copy(target, loaded_weight))
         # If we are in the row parallel case (down_proj)
         elif shard_id == "w2":
             target = param_data[expert_id]
-            target.copy_(self._normalize_loaded_weight_for_copy(target, loaded_weight))
+        else:
+            raise ValueError(f"Unknown shard_id: {shard_id}")
+
+        # Checkpoints may store scalar scales as shape [1]; reshape to match
+        if target.numel() == 1 and loaded_weight.numel() == 1:
+            loaded_weight = loaded_weight.reshape(target.shape)
+
+        target.copy_(self._normalize_loaded_weight_for_copy(target, loaded_weight))
 
     def _load_combined_w13_weight_scale(
         self,
@@ -827,6 +833,10 @@ class FusedMoE(PluggableLayer):
         param_data = param.data
 
         # Input scales can be loaded directly and should be equal.
+        # Checkpoints may store scalar scales as shape [1]; reshape to match
+        target = param_data[expert_id]
+        if target.numel() == 1 and loaded_weight.numel() == 1:
+            loaded_weight = loaded_weight.reshape(target.shape)
         param_data[expert_id] = loaded_weight
 
     def _load_g_idx(
